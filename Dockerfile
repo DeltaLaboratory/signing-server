@@ -8,7 +8,7 @@ RUN go mod tidy
 COPY . .
 RUN CGO_ENABLED=0 go build -a -trimpath -ldflags="-s -w" -o /app/app .
 
-FROM bookworm:latest
+FROM debian:latest
 WORKDIR /app
 
 COPY --from=build /app/app /usr/local/bin/signing-server
