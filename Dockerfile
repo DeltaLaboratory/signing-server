@@ -23,4 +23,4 @@ RUN wget -O /tmp/jsigner.deb https://github.com/ebourg/jsign/releases/download/6
 
 COPY --from=build /app/app /usr/local/bin/signing-server
 
-CMD service pcscd start && /usr/local/bin/signing-server
+CMD ["/usr/local/bin/signing-server"]
