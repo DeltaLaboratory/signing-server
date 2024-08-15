@@ -1,0 +1,26 @@
+name: "Code Analysis"
+on: ["push", "pull_request"]
+
+jobs:
+  basic:
+    name: "Run Basic Code Analysis"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+      - run: "go test ./..."
+      - run: "go vet ./..."
+  golangci-lint:
+    name: "Run GolangCI-Lint Code Analysis"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
