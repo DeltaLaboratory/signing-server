@@ -22,7 +22,9 @@ func sign(workingDirectory, requestKey, tokenPIN, certFile string) func(ctx *fib
 
 		// create working directory
 		ts := time.Now().UnixMilli()
-		workingDirectory = fmt.Sprintf("%s/%d", workingDirectory, ts)
+		workingDirectory := fmt.Sprintf("%s/%d", workingDirectory, ts)
+
+		fmt.Printf("[%d] Working directory: %s\n", ts, workingDirectory)
 		if err := os.MkdirAll(workingDirectory, 0755); err != nil {
 			return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to create working directory: %v", err))
 		}
@@ -32,6 +34,8 @@ func sign(workingDirectory, requestKey, tokenPIN, certFile string) func(ctx *fib
 		if err != nil {
 			return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to create file: %v", err))
 		}
+
+		fmt.Printf("Saving file %s\n", file.Name())
 
 		requestStream := ctx.Context().RequestBodyStream()
 		if _, err := io.Copy(file, requestStream); err != nil {
@@ -59,7 +63,8 @@ func sign(workingDirectory, requestKey, tokenPIN, certFile string) func(ctx *fib
 
 		go func() {
 			cmd := exec.Command("jsign", args...)
-			if out, err := cmd.CombinedOutput(); err != nil {
+			out, err := cmd.CombinedOutput()
+			if err != nil {
 				if out != nil {
 					jobMap[ts].Processing = false
 					jobMap[ts].Success = false
@@ -71,11 +76,13 @@ func sign(workingDirectory, requestKey, tokenPIN, certFile string) func(ctx *fib
 					jobMap[ts].Error = fmt.Sprintf("failed to sign file: %v", err)
 					fmt.Printf("Failed to sign file: %v\n", err)
 				}
+				fmt.Printf("Job %d failed\n", ts)
+				return
 			}
 
 			jobMap[ts].Processing = false
 			jobMap[ts].Success = true
-			fmt.Printf("Job %d completed\n", ts)
+			fmt.Printf("Job %d completed: %s\n", ts, out)
 		}()
 
 		return ctx.JSON(CreateJobResponse{ID: ts})

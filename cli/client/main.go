@@ -133,8 +133,8 @@ func main() {
 
 	flag.StringVar(&flagInput, "input", "", "input file")
 	flag.StringVar(&flagOutput, "output", "", "output file")
-	flag.StringVar(&flagApplicationName, "application-name", "", "application name")
-	flag.StringVar(&flagApplicationURL, "application-url", "", "application url")
+	flag.StringVar(&flagApplicationName, "appname", "", "application name")
+	flag.StringVar(&flagApplicationURL, "appurl", "", "application url")
 	flag.Parse()
 
 	if envEndpoint == "" {
@@ -162,11 +162,6 @@ func main() {
 		fmt.Printf("failed to open input file: %v\n", err)
 		os.Exit(3)
 	}
-	defer func() {
-		if err := file.Close(); err != nil {
-			fmt.Println("failed to close input file")
-		}
-	}()
 
 	jobID, err := createJob(file)
 	if err != nil {
@@ -196,6 +191,7 @@ func main() {
 
 		if !job.Processing {
 			if !job.Success {
+				done <- true
 				fmt.Printf("job failed: %s\n", job.Error)
 				os.Exit(6)
 			}
@@ -243,6 +239,8 @@ func spinner(done <-chan bool) {
 	for {
 		select {
 		case <-done:
+			// clear line
+			fmt.Printf("\033[2K\r\r✓ done (%ds)\n", int(time.Since(startTime).Seconds()))
 			return
 		case <-ticker.C:
 			fmt.Printf("\r%s processing... (%ds)", frames[i], int(time.Since(startTime).Seconds()))
