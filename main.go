@@ -10,7 +10,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-func sign(workingDirectory, requestKey, tokenPIN string) func(ctx *fiber.Ctx) error {
+func sign(workingDirectory, requestKey, tokenPIN, certFile string) func(ctx *fiber.Ctx) error {
 	return func(ctx *fiber.Ctx) error {
 		if ctx.Get("X-Request-Key") != requestKey {
 			return ctx.SendStatus(fiber.StatusUnauthorized)
@@ -35,7 +35,7 @@ func sign(workingDirectory, requestKey, tokenPIN string) func(ctx *fiber.Ctx) er
 
 		// sign with osslsigncode with pkcs11 token
 		//goland:noinspection HttpUrlsUsage
-		cmd := exec.Command("osslsigncode", "sign", "-h", "sha384", "-pkcs11module", "/usr/lib/x86_64-linux-gnu/libykcs11.so", "-key", "pkcs11:id=%01", "-pass", tokenPIN, "-ts", "http://timestamp.sectigo.com", "-in", fmt.Sprintf("%s/%s", workingDirectory, "file"), "-out", fmt.Sprintf("%s/%s", workingDirectory, "signed"))
+		cmd := exec.Command("osslsigncode", "sign", "-h", "sha384", "-pkcs11module", "/usr/lib/x86_64-linux-gnu/libykcs11.so", "-certs", certFile, "-key", "pkcs11:id=%01", "-pass", tokenPIN, "-ts", "http://timestamp.sectigo.com", "-in", fmt.Sprintf("%s/%s", workingDirectory, "file"), "-out", fmt.Sprintf("%s/%s", workingDirectory, "signed"))
 		if out, err := cmd.CombinedOutput(); err != nil {
 			if out != nil {
 				return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to sign file: %v: %s", err, out))
@@ -57,6 +57,7 @@ func sign(workingDirectory, requestKey, tokenPIN string) func(ctx *fiber.Ctx) er
 func main() {
 	requestKey := os.Getenv("REQUEST_KEY")
 	tokenPIN := os.Getenv("TOKEN_PIN")
+	certFile := os.Getenv("CERT_FILE")
 	workingDirectory := os.TempDir()
 
 	if requestKey == "" {
@@ -65,6 +66,22 @@ func main() {
 
 	if workingDirectory == "" {
 		panic("Working directory is not set")
+	}
+
+	if certFile == "" {
+		certFile = "/etc/signing-server/cert.crt"
+
+		if _, err := os.Stat(certFile); err != nil {
+			fmt.Println("CERT_FILE is not set and default file does not exist")
+			os.Exit(1)
+		}
+
+		fmt.Printf("CERT_FILE is not set, using default: %s\n", certFile)
+	} else {
+		if _, err := os.Stat(certFile); err != nil {
+			fmt.Printf("CERT_FILE does not exist: %s\n", certFile)
+			os.Exit(1)
+		}
 	}
 
 	defer func() {
@@ -92,7 +109,7 @@ func main() {
 		},
 	})
 
-	server.Post("/sign", sign(workingDirectory, requestKey, tokenPIN))
+	server.Post("/sign", sign(workingDirectory, requestKey, tokenPIN, certFile))
 
 	if err := server.Listen(":80"); err != nil {
 		panic(err)

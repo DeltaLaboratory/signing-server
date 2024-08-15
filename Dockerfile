@@ -8,11 +8,11 @@ RUN go mod tidy
 COPY . .
 RUN CGO_ENABLED=0 go build -a -trimpath -ldflags="-s -w" -o /app/app .
 
-FROM debian:latest
+FROM bitnami/minideb:latest
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y yubikey-manager osslsigncode ykcs11 libengine-pkcs11-openssl
+RUN install_packages yubikey-manager osslsigncode ykcs11 libengine-pkcs11-openssl
 
 COPY --from=build /app/app /usr/local/bin/signing-server
 
-CMD ["signing-server"]
+CMD service pcscd start && /usr/local/bin/signing-server
