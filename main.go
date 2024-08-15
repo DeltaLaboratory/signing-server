@@ -10,6 +10,8 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
+var jobMap = make(map[int64]*Job)
+
 func sign(workingDirectory, requestKey, tokenPIN, certFile string) func(ctx *fiber.Ctx) error {
 	return func(ctx *fiber.Ctx) error {
 		if ctx.Get("X-Request-Key") != requestKey {
@@ -28,29 +30,93 @@ func sign(workingDirectory, requestKey, tokenPIN, certFile string) func(ctx *fib
 		if err != nil {
 			return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to create file: %v", err))
 		}
+
 		requestStream := ctx.Context().RequestBodyStream()
 		if _, err := io.Copy(file, requestStream); err != nil {
 			return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to save file: %v", err))
 		}
 
-		// sign with osslsigncode with pkcs11 token
-		//goland:noinspection HttpUrlsUsage
-		cmd := exec.Command("osslsigncode", "sign", "-h", "sha384", "-pkcs11module", "/usr/lib/x86_64-linux-gnu/libykcs11.so", "-certs", certFile, "-key", "pkcs11:id=%01", "-pass", tokenPIN, "-ts", "http://timestamp.sectigo.com", "-in", fmt.Sprintf("%s/%s", workingDirectory, "file"), "-out", fmt.Sprintf("%s/%s", workingDirectory, "signed"))
-		if out, err := cmd.CombinedOutput(); err != nil {
-			if out != nil {
-				return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to sign file: %v: %s", err, out))
-			} else {
-				return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to sign file: %v", err))
+		jobMap[ts] = &Job{
+			ID:         ts,
+			Processing: true,
+			Success:    false,
+			Error:      "",
+		}
+
+		go func() {
+			// sign with osslsigncode with pkcs11 token
+			//goland:noinspection HttpUrlsUsage
+			cmd := exec.Command("osslsigncode", "sign", "-h", "sha384", "-pkcs11module", "/usr/lib/x86_64-linux-gnu/libykcs11.so", "-certs", certFile, "-key", "pkcs11:id=%01", "-pass", tokenPIN, "-ts", "http://timestamp.sectigo.com", "-in", fmt.Sprintf("%s/%s", workingDirectory, "file"), "-out", fmt.Sprintf("%s/%s", workingDirectory, "signed"))
+			if out, err := cmd.CombinedOutput(); err != nil {
+				if out != nil {
+					jobMap[ts].Processing = false
+					jobMap[ts].Success = false
+					jobMap[ts].Error = fmt.Sprintf("failed to sign file: %v: %s", err, out)
+				} else {
+					jobMap[ts].Processing = false
+					jobMap[ts].Success = false
+					jobMap[ts].Error = fmt.Sprintf("failed to sign file: %v", err)
+				}
 			}
+
+			jobMap[ts].Processing = false
+			jobMap[ts].Success = true
+		}()
+
+		return ctx.JSON(CreateJobResponse{ID: ts})
+	}
+}
+
+func status(requestKey string) func(*fiber.Ctx) error {
+	return func(ctx *fiber.Ctx) error {
+		if ctx.Get("X-Request-Key") != requestKey {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
 		}
 
-		// send signed file
-		signedFile, err := os.Open(fmt.Sprintf("%s/%s", workingDirectory, "signed"))
+		id, err := ctx.ParamsInt("id")
 		if err != nil {
-			return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to open signed file: %v", err))
+			return ctx.Status(fiber.StatusBadRequest).SendString("invalid job id")
 		}
 
-		return ctx.Status(fiber.StatusOK).SendStream(signedFile)
+		job, ok := jobMap[int64(id)]
+		if !ok {
+			return ctx.Status(fiber.StatusNotFound).SendString("job not found")
+		}
+
+		return ctx.JSON(job)
+	}
+}
+
+func download(workingDirectory, requestKey string) func(*fiber.Ctx) error {
+	return func(ctx *fiber.Ctx) error {
+		if ctx.Get("X-Request-Key") != requestKey {
+			return ctx.SendStatus(fiber.StatusUnauthorized)
+		}
+
+		id, err := ctx.ParamsInt("id")
+		if err != nil {
+			return ctx.Status(fiber.StatusBadRequest).SendString("invalid job id")
+		}
+
+		job, ok := jobMap[int64(id)]
+		if !ok {
+			return ctx.Status(fiber.StatusNotFound).SendString("job not found")
+		}
+
+		if job.Processing {
+			return ctx.Status(fiber.StatusAccepted).SendString("job is still processing")
+		}
+
+		if !job.Success {
+			return ctx.Status(fiber.StatusInternalServerError).SendString(job.Error)
+		}
+
+		file, err := os.Open(fmt.Sprintf("%s/%d/%s", workingDirectory, id, "signed"))
+		if err != nil {
+			return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to open file: %v", err))
+		}
+
+		return ctx.SendStream(file)
 	}
 }
 
@@ -110,8 +176,21 @@ func main() {
 	})
 
 	server.Post("/sign", sign(workingDirectory, requestKey, tokenPIN, certFile))
+	server.Get("/status/:id", status(requestKey))
+	server.Get("/download/:id", download(workingDirectory, requestKey))
 
 	if err := server.Listen(":80"); err != nil {
 		panic(err)
 	}
+}
+
+type CreateJobResponse struct {
+	ID int64 `json:"id"`
+}
+
+type Job struct {
+	ID         int64  `json:"id"`
+	Processing bool   `json:"processing"`
+	Success    bool   `json:"success"`
+	Error      string `json:"error"`
 }
