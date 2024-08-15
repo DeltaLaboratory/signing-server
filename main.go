@@ -140,6 +140,11 @@ func download(workingDirectory, requestKey string) func(*fiber.Ctx) error {
 
 		fmt.Printf("Serving file %s from ip %s\n", file.Name(), ctx.IP())
 
+		delete(jobMap, int64(id))
+		if err := os.RemoveAll(fmt.Sprintf("%s/%d", workingDirectory, id)); err != nil {
+			fmt.Printf("Failed to cleanup working directory: %v\n", err)
+		}
+
 		return ctx.SendStream(file)
 	}
 }
