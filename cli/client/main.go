@@ -63,7 +63,7 @@ func main() {
 		os.Exit(4)
 	}
 
-	req.Header.Set("X-Request-Token", envRequestToken)
+	req.Header.Set("X-Request-Key", envRequestToken)
 
 	resp, err := client.Do(req)
 	if err != nil {
