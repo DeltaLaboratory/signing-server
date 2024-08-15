@@ -15,4 +15,4 @@ COPY --from=build /app/app /usr/local/bin/signing-server
 
 RUN install_packages yubikey-manager osslsigncode ykcs11 libengine-pkcs11-openssl
 
-CMD ["siging-server"]
+CMD ["signing-server"]

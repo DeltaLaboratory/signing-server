@@ -35,7 +35,7 @@ func sign(workingDirectory, requestKey, tokenPIN string) func(ctx *fiber.Ctx) er
 
 		// sign with osslsigncode with pkcs11 token
 		//goland:noinspection HttpUrlsUsage
-		cmd := exec.Command("osslsigncode", "sign", "-h", "sha384", "-key", "pkcs11:id=%01", "-pass", tokenPIN, "-ts", "http://timestamp.sectigo.com", "-in", fmt.Sprintf("%s/%s", workingDirectory, "file"), "-out", fmt.Sprintf("%s/%s", workingDirectory, "signed"))
+		cmd := exec.Command("osslsigncode", "sign", "-h", "sha384", "-pkcs11module", "/usr/lib/x86_64-linux-gnu/libykcs11.so", "-key", "pkcs11:id=%01", "-pass", tokenPIN, "-ts", "http://timestamp.sectigo.com", "-in", fmt.Sprintf("%s/%s", workingDirectory, "file"), "-out", fmt.Sprintf("%s/%s", workingDirectory, "signed"))
 		if out, err := cmd.CombinedOutput(); err != nil {
 			if out != nil {
 				return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to sign file: %v: %s", err, out))
