@@ -18,6 +18,8 @@ func sign(workingDirectory, requestKey, tokenPIN, certFile string) func(ctx *fib
 			return ctx.SendStatus(fiber.StatusUnauthorized)
 		}
 
+		fmt.Printf("Received request from %s\n", ctx.IP())
+
 		// create working directory
 		ts := time.Now().UnixMilli()
 		workingDirectory = fmt.Sprintf("%s/%d", workingDirectory, ts)
@@ -43,6 +45,8 @@ func sign(workingDirectory, requestKey, tokenPIN, certFile string) func(ctx *fib
 			Error:      "",
 		}
 
+		fmt.Printf("Processing job %d\n", ts)
+
 		go func() {
 			// sign with osslsigncode with pkcs11 token
 			//goland:noinspection HttpUrlsUsage
@@ -52,15 +56,18 @@ func sign(workingDirectory, requestKey, tokenPIN, certFile string) func(ctx *fib
 					jobMap[ts].Processing = false
 					jobMap[ts].Success = false
 					jobMap[ts].Error = fmt.Sprintf("failed to sign file: %v: %s", err, out)
+					fmt.Printf("Failed to sign file: %v: %s\n", err, out)
 				} else {
 					jobMap[ts].Processing = false
 					jobMap[ts].Success = false
 					jobMap[ts].Error = fmt.Sprintf("failed to sign file: %v", err)
+					fmt.Printf("Failed to sign file: %v\n", err)
 				}
 			}
 
 			jobMap[ts].Processing = false
 			jobMap[ts].Success = true
+			fmt.Printf("Job %d completed\n", ts)
 		}()
 
 		return ctx.JSON(CreateJobResponse{ID: ts})
@@ -115,6 +122,8 @@ func download(workingDirectory, requestKey string) func(*fiber.Ctx) error {
 		if err != nil {
 			return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to open file: %v", err))
 		}
+
+		fmt.Printf("Serving file %s from ip %s\n", file.Name(), ctx.IP())
 
 		return ctx.SendStream(file)
 	}

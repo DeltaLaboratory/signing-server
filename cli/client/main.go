@@ -21,7 +21,7 @@ var (
 )
 
 func createJob(file io.Reader) (int64, error) {
-	req, err := http.NewRequest("POST", fmt.Sprintf("https://%s/create", envEndpoint), file)
+	req, err := http.NewRequest("POST", fmt.Sprintf("https://%s/sign", envEndpoint), file)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -162,6 +162,8 @@ func main() {
 		os.Exit(4)
 	}
 
+	fmt.Printf("job created with id: %d\n", jobID)
+
 	done := make(chan bool)
 
 	if os.Getenv("CI") == "" {
@@ -181,6 +183,11 @@ func main() {
 		}
 
 		if !job.Processing {
+			if !job.Success {
+				fmt.Printf("job failed: %s\n", job.Error)
+				os.Exit(6)
+			}
+
 			done <- true
 			break
 		}
@@ -214,7 +221,9 @@ func main() {
 }
 
 func spinner(done <-chan bool) {
-	frames := []string{"|", "/", "-", "\\"}
+	startTime := time.Now()
+
+	frames := []string{"◰", "◳", "◲", "◱"}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -224,7 +233,7 @@ func spinner(done <-chan bool) {
 		case <-done:
 			return
 		case <-ticker.C:
-			fmt.Printf("\r%s", frames[i])
+			fmt.Printf("\r%s processing... (%ds)", frames[i], int(time.Since(startTime).Seconds()))
 			i = (i + 1) % len(frames)
 		}
 	}
