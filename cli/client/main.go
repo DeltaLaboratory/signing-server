@@ -14,6 +14,9 @@ var (
 	flagInput  string
 	flagOutput string
 
+	flagApplicationName string
+	flagApplicationURL  string
+
 	envEndpoint     string
 	envRequestToken string
 
@@ -27,6 +30,13 @@ func createJob(file io.Reader) (int64, error) {
 	}
 
 	req.Header.Set("X-Request-Key", envRequestToken)
+	if flagApplicationName != "" {
+		req.Header.Set("X-Application-Name", flagApplicationName)
+	}
+
+	if flagApplicationURL != "" {
+		req.Header.Set("X-Application-URL", flagApplicationURL)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -123,6 +133,8 @@ func main() {
 
 	flag.StringVar(&flagInput, "input", "", "input file")
 	flag.StringVar(&flagOutput, "output", "", "output file")
+	flag.StringVar(&flagApplicationName, "application-name", "", "application name")
+	flag.StringVar(&flagApplicationURL, "application-url", "", "application url")
 	flag.Parse()
 
 	if envEndpoint == "" {

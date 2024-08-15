@@ -47,10 +47,18 @@ func sign(workingDirectory, requestKey, tokenPIN, certFile string) func(ctx *fib
 
 		fmt.Printf("Processing job %d\n", ts)
 
+		//goland:noinspection HttpUrlsUsage
+		args := []string{"--storetype", "PIV", "--storepass", tokenPIN, "--certfile", certFile, "-d", "sha384", "--tsaurl", "http://timestamp.sectigo.com"}
+		if ctx.Get("X-Application-Name") != "" {
+			args = append(args, "--name", ctx.Get("X-Application-Name"))
+		}
+		if ctx.Get("X-Application-URL") != "" {
+			args = append(args, "--url", ctx.Get("X-Application-URL"))
+		}
+		args = append(args, fmt.Sprintf("%s/%s", workingDirectory, "file"))
+
 		go func() {
-			// sign with osslsigncode with pkcs11 token
-			//goland:noinspection HttpUrlsUsage
-			cmd := exec.Command("osslsigncode", "sign", "-h", "sha384", "-pkcs11module", "/usr/lib/x86_64-linux-gnu/libykcs11.so", "-certs", certFile, "-key", "pkcs11:id=%01", "-pass", tokenPIN, "-ts", "http://timestamp.sectigo.com", "-in", fmt.Sprintf("%s/%s", workingDirectory, "file"), "-out", fmt.Sprintf("%s/%s", workingDirectory, "signed"))
+			cmd := exec.Command("jsign", args...)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				if out != nil {
 					jobMap[ts].Processing = false
@@ -118,7 +126,7 @@ func download(workingDirectory, requestKey string) func(*fiber.Ctx) error {
 			return ctx.Status(fiber.StatusInternalServerError).SendString(job.Error)
 		}
 
-		file, err := os.Open(fmt.Sprintf("%s/%d/%s", workingDirectory, id, "signed"))
+		file, err := os.Open(fmt.Sprintf("%s/%d/%s", workingDirectory, id, "file"))
 		if err != nil {
 			return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to open file: %v", err))
 		}
