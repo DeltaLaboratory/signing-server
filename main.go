@@ -98,9 +98,7 @@ func sign(workingDirectory, tokenPIN, certFile string) func(ctx *fiber.Ctx) erro
 
 			go func() {
 				time.Sleep(JobCleanupDelay)
-				if _, ok := jobMap[ts]; ok {
-					delete(jobMap, ts)
-				}
+				delete(jobMap, ts)
 
 				if err := os.RemoveAll(workingDirectory); err != nil {
 					if errors.Is(err, os.ErrNotExist) {
