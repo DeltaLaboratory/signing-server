@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 var (
@@ -22,6 +25,11 @@ var (
 
 	client = &http.Client{}
 )
+
+func init() {
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+}
 
 func createJob(file io.Reader) (int64, error) {
 	req, err := http.NewRequest("POST", fmt.Sprintf("https://%s/sign", envEndpoint), file)
@@ -45,7 +53,7 @@ func createJob(file io.Reader) (int64, error) {
 
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			fmt.Println("failed to close response body")
+			log.Error().Err(err).Msg("Failed to close response body")
 		}
 	}()
 
@@ -81,7 +89,7 @@ func getJobStatus(jobID int64) (*Job, error) {
 
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			fmt.Println("failed to close response body")
+			log.Error().Err(err).Msg("Failed to close response body")
 		}
 	}()
 
@@ -138,45 +146,39 @@ func main() {
 	flag.Parse()
 
 	if envEndpoint == "" {
-		fmt.Println("endpoint is required")
-		os.Exit(1)
+		log.Fatal().Msg("Endpoint is required")
 	}
 
 	if envRequestToken == "" {
-		fmt.Println("request token is required")
-		os.Exit(1)
+		log.Fatal().Msg("Request token is required")
 	}
 
 	if flagInput == "" {
-		fmt.Println("input file is required")
-		os.Exit(2)
+		log.Fatal().Msg("Input file is required")
 	}
 
 	if flagOutput == "" {
-		fmt.Println("output file is required")
-		os.Exit(2)
+		log.Fatal().Msg("Output file is required")
 	}
 
 	file, err := os.Open(flagInput)
 	if err != nil {
-		fmt.Printf("failed to open input file: %v\n", err)
-		os.Exit(3)
+		log.Fatal().Err(err).Msg("Failed to open input file")
 	}
 
 	jobID, err := createJob(file)
 	if err != nil {
-		fmt.Printf("failed to create job: %v\n", err)
-		os.Exit(4)
+		log.Fatal().Err(err).Msg("Failed to create job")
 	}
 
-	fmt.Printf("job created with id: %d\n", jobID)
+	log.Info().Int64("jobID", jobID).Msg("Job created")
 
 	done := make(chan bool)
 
 	if os.Getenv("CI") == "" {
 		go spinner(done)
 	} else {
-		fmt.Println("processing...")
+		log.Info().Msg("Processing...")
 		go func() {
 			<-done
 		}()
@@ -185,15 +187,13 @@ func main() {
 	for {
 		job, err := getJobStatus(jobID)
 		if err != nil {
-			fmt.Printf("failed to get job status: %v\n", err)
-			os.Exit(5)
+			log.Fatal().Err(err).Msg("Failed to get job status")
 		}
 
 		if !job.Processing {
 			if !job.Success {
 				done <- true
-				fmt.Printf("job failed: %s\n", job.Error)
-				os.Exit(6)
+				log.Fatal().Str("error", job.Error).Msg("Job failed")
 			}
 
 			done <- true
@@ -204,34 +204,30 @@ func main() {
 
 	out, err := os.Create(flagOutput)
 	if err != nil {
-		fmt.Printf("failed to create output file: %v\n", err)
-		os.Exit(7)
+		log.Fatal().Err(err).Msg("Failed to create output file")
 	}
 
 	defer func() {
 		if err := out.Close(); err != nil {
-			fmt.Println("failed to close output file")
+			log.Error().Err(err).Msg("Failed to close output file")
 		}
 	}()
 
 	resp, err := downloadFile(jobID)
 	if err != nil {
-		fmt.Printf("failed to download file: %v\n", err)
-		os.Exit(6)
+		log.Fatal().Err(err).Msg("Failed to download file")
 	}
 
 	if _, err := io.Copy(out, resp); err != nil {
-		fmt.Printf("failed to save output file: %v\n", err)
-		os.Exit(8)
+		log.Fatal().Err(err).Msg("Failed to save output file")
 	}
 
-	fmt.Println("file signed successfully")
+	log.Info().Msg("File signed successfully")
 }
 
 func spinner(done <-chan bool) {
 	startTime := time.Now()
-
-	frames := []string{"◰", "◳", "◲", "◱"}
+	frames := []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -239,11 +235,10 @@ func spinner(done <-chan bool) {
 	for {
 		select {
 		case <-done:
-			// clear line
-			fmt.Printf("\033[2K\r\r✓ done (%ds)\n", int(time.Since(startTime).Seconds()))
+			fmt.Printf("\033[2K\r✓ Done (%ds)\n", int(time.Since(startTime).Seconds()))
 			return
 		case <-ticker.C:
-			fmt.Printf("\r%s processing... (%ds)", frames[i], int(time.Since(startTime).Seconds()))
+			fmt.Printf("\r%s Processing... (%ds)", frames[i], int(time.Since(startTime).Seconds()))
 			i = (i + 1) % len(frames)
 		}
 	}
