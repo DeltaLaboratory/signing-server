@@ -2,7 +2,10 @@ module signing-server
 
 go 1.22
 
-require github.com/gofiber/fiber/v2 v2.52.5
+require (
+	github.com/gofiber/fiber/v2 v2.52.5
+	github.com/rs/zerolog v1.33.0
+)
 
 require (
 	github.com/andybalholm/brotli v1.1.0 // indirect
