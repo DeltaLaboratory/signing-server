@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -18,6 +19,7 @@ const (
 	JobCleanupDelay = 5 * time.Minute
 )
 
+var jobMapLock = sync.RWMutex{}
 var jobMap = make(map[int64]*Job)
 
 func init() {
@@ -31,15 +33,15 @@ func sign(workingDirectory, tokenPIN, certFile string) func(ctx *fiber.Ctx) erro
 
 		// create working directory
 		ts := time.Now().UnixMilli()
-		workingDirectory := fmt.Sprintf("%s/%d", workingDirectory, ts)
+		jobWorkingDirectory := fmt.Sprintf("%s/%d", workingDirectory, ts)
 
-		log.Info().Int64("job_id", ts).Str("working_dir", workingDirectory).Msg("Working directory")
-		if err := os.MkdirAll(workingDirectory, 0755); err != nil {
+		log.Info().Int64("job_id", ts).Str("working_dir", jobWorkingDirectory).Msg("Working directory")
+		if err := os.MkdirAll(jobWorkingDirectory, 0755); err != nil {
 			log.Error().Err(err).Msg("Failed to create working directory")
 			return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to create working directory: %v", err))
 		}
 
-		file, err := os.OpenFile(fmt.Sprintf("%s/%s", workingDirectory, "file"), os.O_CREATE|os.O_WRONLY, 0644)
+		file, err := os.OpenFile(fmt.Sprintf("%s/%s", jobWorkingDirectory, "file"), os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to create file")
 			return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to create file: %v", err))
@@ -53,12 +55,14 @@ func sign(workingDirectory, tokenPIN, certFile string) func(ctx *fiber.Ctx) erro
 			return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to save file: %v", err))
 		}
 
+		jobMapLock.Lock()
 		jobMap[ts] = &Job{
 			ID:         ts,
 			Processing: true,
 			Success:    false,
 			Error:      "",
 		}
+		jobMapLock.Unlock()
 
 		log.Info().Int64("job_id", ts).Msg("Processing job")
 
@@ -70,12 +74,14 @@ func sign(workingDirectory, tokenPIN, certFile string) func(ctx *fiber.Ctx) erro
 		if ctx.Get("X-Application-URL") != "" {
 			args = append(args, "--url", ctx.Get("X-Application-URL"))
 		}
-		args = append(args, fmt.Sprintf("%s/%s", workingDirectory, "file"))
+		args = append(args, fmt.Sprintf("%s/%s", jobWorkingDirectory, "file"))
 
 		go func() {
 			cmd := exec.Command("jsign", args...)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
+				jobMapLock.Lock()
+				defer jobMapLock.Unlock()
 				jobMap[ts].Processing = false
 				jobMap[ts].Success = false
 				if out != nil {
@@ -88,19 +94,26 @@ func sign(workingDirectory, tokenPIN, certFile string) func(ctx *fiber.Ctx) erro
 				log.Error().Int64("job_id", ts).Msg("Job failed")
 
 				_ = file.Close()
-				_ = os.RemoveAll(workingDirectory)
+				_ = os.RemoveAll(jobWorkingDirectory)
 				return
 			}
 
+			jobMapLock.Lock()
 			jobMap[ts].Processing = false
 			jobMap[ts].Success = true
+			jobMapLock.Unlock()
+
 			log.Info().Int64("job_id", ts).Str("output", string(out)).Msg("Job completed")
 
 			go func() {
 				time.Sleep(JobCleanupDelay)
-				delete(jobMap, ts)
+				log.Info().Int64("job_id", ts).Msg("Cleaning up job")
 
-				if err := os.RemoveAll(workingDirectory); err != nil {
+				jobMapLock.Lock()
+				delete(jobMap, ts)
+				jobMapLock.Unlock()
+
+				if err := os.RemoveAll(jobWorkingDirectory); err != nil {
 					if errors.Is(err, os.ErrNotExist) {
 						return
 					}
@@ -121,6 +134,8 @@ func status() func(*fiber.Ctx) error {
 			return ctx.Status(fiber.StatusBadRequest).SendString("invalid job id")
 		}
 
+		jobMapLock.RLock()
+		defer jobMapLock.RUnlock()
 		job, ok := jobMap[int64(id)]
 		if !ok {
 			log.Error().Int("job_id", id).Msg("Job not found")
@@ -139,11 +154,13 @@ func download(workingDirectory string) func(*fiber.Ctx) error {
 			return ctx.Status(fiber.StatusBadRequest).SendString("invalid job id")
 		}
 
+		jobMapLock.RLock()
 		job, ok := jobMap[int64(id)]
 		if !ok {
 			log.Error().Int("job_id", id).Msg("Job not found")
 			return ctx.Status(fiber.StatusNotFound).SendString("job not found")
 		}
+		jobMapLock.RUnlock()
 
 		if job.Processing {
 			log.Info().Int("job_id", id).Msg("Job is still processing")
@@ -163,7 +180,10 @@ func download(workingDirectory string) func(*fiber.Ctx) error {
 
 		log.Info().Str("file", file.Name()).Str("ip", ctx.IP()).Msg("Serving file")
 
+		jobMapLock.Lock()
 		delete(jobMap, int64(id))
+		jobMapLock.Unlock()
+
 		if err := os.RemoveAll(fmt.Sprintf("%s/%d", workingDirectory, id)); err != nil {
 			log.Error().Err(err).Int("job_id", id).Msg("Failed to cleanup working directory")
 		}
