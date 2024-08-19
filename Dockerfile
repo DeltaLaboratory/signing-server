@@ -6,7 +6,7 @@ COPY go.mod go.sum ./
 RUN go mod tidy
 
 COPY . .
-RUN CGO_ENABLED=0 go build -a -trimpath -ldflags="-s -w" -o /app/app .
+RUN CGO_ENABLED=0 go build -a -buildvcs false -trimpath -ldflags="-s -w -buildid" -o /app/app .
 
 FROM bitnami/minideb:latest
 WORKDIR /app
