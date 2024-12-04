@@ -21,6 +21,8 @@ const (
 	DefaultCertFile = "/etc/signing-server/cert.crt"
 	// MaxFileSize is the maximum file size limit (1GB)
 	MaxFileSize = 1024 * 1024 * 1024
+
+	DefaultTimeStampServer = "http://timestamp.acs.microsoft.com"
 )
 
 // Job represents a signing job
@@ -91,7 +93,7 @@ func processSigningJob(ts int64, cmd *exec.Cmd, jobWorkingDirectory string) {
 	go cleanupJob(ts, jobWorkingDirectory)
 }
 
-func sign(workingDirectory, tokenPIN, certFile string) fiber.Handler {
+func sign(workingDirectory, tokenPIN, certFile, timeStampServer string) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
 		log.Info().Str("ip", ctx.IP()).Msg("Received request")
 
@@ -130,7 +132,7 @@ func sign(workingDirectory, tokenPIN, certFile string) fiber.Handler {
 		}
 		jobMapLock.Unlock()
 
-		args := buildSigningArgs(tokenPIN, certFile, ctx, jobWorkingDirectory)
+		args := buildSigningArgs(tokenPIN, certFile, ctx, jobWorkingDirectory, timeStampServer)
 		cmd := exec.Command("jsign", args...)
 
 		go processSigningJob(ts, cmd, jobWorkingDirectory)
@@ -139,13 +141,13 @@ func sign(workingDirectory, tokenPIN, certFile string) fiber.Handler {
 	}
 }
 
-func buildSigningArgs(tokenPIN, certFile string, ctx *fiber.Ctx, jobWorkingDirectory string) []string {
+func buildSigningArgs(tokenPIN, certFile string, ctx *fiber.Ctx, jobWorkingDirectory string, timeStampServer string) []string {
 	args := []string{
 		"--storetype", "PIV",
 		"--storepass", tokenPIN,
 		"--certfile", certFile,
 		"-d", "sha384",
-		"--tsaurl", "http://timestamp.sectigo.com",
+		"--tsaurl", timeStampServer,
 	}
 
 	if appName := ctx.Get("X-Application-Name"); appName != "" {
@@ -248,6 +250,7 @@ type Config struct {
 	TokenPIN         string
 	CertFile         string
 	WorkingDirectory string
+	TimeStampServer  string
 }
 
 func loadConfig() Config {
@@ -256,6 +259,7 @@ func loadConfig() Config {
 		TokenPIN:         os.Getenv("TOKEN_PIN"),
 		CertFile:         os.Getenv("CERT_FILE"),
 		WorkingDirectory: os.TempDir(),
+		TimeStampServer:  os.Getenv("TIMESTAMP_SERVER"),
 	}
 }
 
@@ -270,6 +274,10 @@ func validateConfig(config Config) {
 
 	if config.CertFile == "" {
 		config.CertFile = DefaultCertFile
+	}
+
+	if config.TimeStampServer == "" {
+		config.TimeStampServer = DefaultTimeStampServer
 	}
 
 	if _, err := os.Stat(config.CertFile); err != nil {
@@ -303,7 +311,7 @@ func setupRoutes(server *fiber.App, config Config) {
 		return ctx.Next()
 	})
 
-	server.Post("/sign", sign(config.WorkingDirectory, config.TokenPIN, config.CertFile))
+	server.Post("/sign", sign(config.WorkingDirectory, config.TokenPIN, config.CertFile, config.TimeStampServer))
 	server.Get("/status/:id", status())
 	server.Get("/download/:id", download(config.WorkingDirectory))
 }
