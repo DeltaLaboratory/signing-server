@@ -15,44 +15,111 @@ import (
 )
 
 const (
-	// JobCleanupDelay is the delay before the job is removed from the map, cleanup working directory
+	// JobCleanupDelay is the delay before the job is removed from the map and working directory is cleaned
 	JobCleanupDelay = 5 * time.Minute
+	// DefaultCertFile is the default path for the certificate file
+	DefaultCertFile = "/etc/signing-server/cert.crt"
+	// MaxFileSize is the maximum file size limit (1GB)
+	MaxFileSize = 1024 * 1024 * 1024
 )
 
-var jobMapLock = sync.RWMutex{}
-var jobMap = make(map[int64]*Job)
+// Job represents a signing job
+type Job struct {
+	ID         int64  `json:"id"`
+	Processing bool   `json:"processing"`
+	Success    bool   `json:"success"`
+	Error      string `json:"error"`
+}
+
+// CreateJobResponse represents the response for job creation
+type CreateJobResponse struct {
+	ID int64 `json:"id"`
+}
+
+var (
+	jobMapLock = sync.RWMutex{}
+	jobMap     = make(map[int64]*Job)
+)
 
 func init() {
+	// Configure zerolog
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
 }
 
-func sign(workingDirectory, tokenPIN, certFile string) func(ctx *fiber.Ctx) error {
+// cleanupJob removes the job from the map and its working directory after a delay
+func cleanupJob(ts int64, workingDirectory string) {
+	time.Sleep(JobCleanupDelay)
+	log.Info().Int64("job_id", ts).Msg("Cleaning up job")
+
+	jobMapLock.Lock()
+	delete(jobMap, ts)
+	jobMapLock.Unlock()
+
+	if err := os.RemoveAll(workingDirectory); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Error().Err(err).Int64("job_id", ts).Msg("Failed to cleanup working directory")
+		}
+	}
+}
+
+// processSigningJob handles the actual signing process
+func processSigningJob(ts int64, cmd *exec.Cmd, jobWorkingDirectory string) {
+	out, err := cmd.CombinedOutput()
+	jobMapLock.Lock()
+	defer jobMapLock.Unlock()
+
+	if err != nil {
+		jobMap[ts].Processing = false
+		jobMap[ts].Success = false
+		if out != nil {
+			jobMap[ts].Error = fmt.Sprintf("failed to sign file: %v: %s", err, out)
+			log.Error().Err(err).Str("output", string(out)).Msg("Failed to sign file")
+		} else {
+			jobMap[ts].Error = fmt.Sprintf("failed to sign file: %v", err)
+			log.Error().Err(err).Msg("Failed to sign file")
+		}
+		log.Error().Int64("job_id", ts).Msg("Job failed")
+		_ = os.RemoveAll(jobWorkingDirectory)
+		return
+	}
+
+	jobMap[ts].Processing = false
+	jobMap[ts].Success = true
+	log.Info().Int64("job_id", ts).Str("output", string(out)).Msg("Job completed")
+
+	go cleanupJob(ts, jobWorkingDirectory)
+}
+
+func sign(workingDirectory, tokenPIN, certFile string) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
 		log.Info().Str("ip", ctx.IP()).Msg("Received request")
 
-		// create working directory
 		ts := time.Now().UnixMilli()
 		jobWorkingDirectory := fmt.Sprintf("%s/%d", workingDirectory, ts)
 
-		log.Info().Int64("job_id", ts).Str("working_dir", jobWorkingDirectory).Msg("Working directory")
 		if err := os.MkdirAll(jobWorkingDirectory, 0755); err != nil {
 			log.Error().Err(err).Msg("Failed to create working directory")
-			return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to create working directory: %v", err))
+			return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": fmt.Sprintf("failed to create working directory: %v", err),
+			})
 		}
 
-		file, err := os.OpenFile(fmt.Sprintf("%s/%s", jobWorkingDirectory, "file"), os.O_CREATE|os.O_WRONLY, 0644)
+		filePath := fmt.Sprintf("%s/file", jobWorkingDirectory)
+		file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to create file")
-			return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to create file: %v", err))
+			return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": fmt.Sprintf("failed to create file: %v", err),
+			})
 		}
+		defer file.Close()
 
-		log.Info().Str("file", file.Name()).Msg("Saving file")
-
-		requestStream := ctx.Context().RequestBodyStream()
-		if _, err := io.Copy(file, requestStream); err != nil {
+		if _, err := io.Copy(file, ctx.Context().RequestBodyStream()); err != nil {
 			log.Error().Err(err).Msg("Failed to save file")
-			return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to save file: %v", err))
+			return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": fmt.Sprintf("failed to save file: %v", err),
+			})
 		}
 
 		jobMapLock.Lock()
@@ -60,180 +127,161 @@ func sign(workingDirectory, tokenPIN, certFile string) func(ctx *fiber.Ctx) erro
 			ID:         ts,
 			Processing: true,
 			Success:    false,
-			Error:      "",
 		}
 		jobMapLock.Unlock()
 
-		log.Info().Int64("job_id", ts).Msg("Processing job")
+		args := buildSigningArgs(tokenPIN, certFile, ctx, jobWorkingDirectory)
+		cmd := exec.Command("jsign", args...)
 
-		//goland:noinspection HttpUrlsUsage
-		args := []string{"--storetype", "PIV", "--storepass", tokenPIN, "--certfile", certFile, "-d", "sha384", "--tsaurl", "http://timestamp.sectigo.com"}
-		if ctx.Get("X-Application-Name") != "" {
-			args = append(args, "--name", ctx.Get("X-Application-Name"))
-		}
-		if ctx.Get("X-Application-URL") != "" {
-			args = append(args, "--url", ctx.Get("X-Application-URL"))
-		}
-		args = append(args, fmt.Sprintf("%s/%s", jobWorkingDirectory, "file"))
-
-		go func() {
-			cmd := exec.Command("jsign", args...)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				jobMapLock.Lock()
-				defer jobMapLock.Unlock()
-				jobMap[ts].Processing = false
-				jobMap[ts].Success = false
-				if out != nil {
-					jobMap[ts].Error = fmt.Sprintf("failed to sign file: %v: %s", err, out)
-					log.Error().Err(err).Str("output", string(out)).Msg("Failed to sign file")
-				} else {
-					jobMap[ts].Error = fmt.Sprintf("failed to sign file: %v", err)
-					log.Error().Err(err).Msg("Failed to sign file")
-				}
-				log.Error().Int64("job_id", ts).Msg("Job failed")
-
-				_ = file.Close()
-				_ = os.RemoveAll(jobWorkingDirectory)
-				return
-			}
-
-			jobMapLock.Lock()
-			jobMap[ts].Processing = false
-			jobMap[ts].Success = true
-			jobMapLock.Unlock()
-
-			log.Info().Int64("job_id", ts).Str("output", string(out)).Msg("Job completed")
-
-			go func() {
-				time.Sleep(JobCleanupDelay)
-				log.Info().Int64("job_id", ts).Msg("Cleaning up job")
-
-				jobMapLock.Lock()
-				delete(jobMap, ts)
-				jobMapLock.Unlock()
-
-				if err := os.RemoveAll(jobWorkingDirectory); err != nil {
-					if errors.Is(err, os.ErrNotExist) {
-						return
-					}
-					log.Error().Err(err).Int64("job_id", ts).Msg("Failed to cleanup working directory")
-				}
-			}()
-		}()
+		go processSigningJob(ts, cmd, jobWorkingDirectory)
 
 		return ctx.JSON(CreateJobResponse{ID: ts})
 	}
 }
 
-func status() func(*fiber.Ctx) error {
+func buildSigningArgs(tokenPIN, certFile string, ctx *fiber.Ctx, jobWorkingDirectory string) []string {
+	args := []string{
+		"--storetype", "PIV",
+		"--storepass", tokenPIN,
+		"--certfile", certFile,
+		"-d", "sha384",
+		"--tsaurl", "http://timestamp.sectigo.com",
+	}
+
+	if appName := ctx.Get("X-Application-Name"); appName != "" {
+		args = append(args, "--name", appName)
+	}
+	if appURL := ctx.Get("X-Application-URL"); appURL != "" {
+		args = append(args, "--url", appURL)
+	}
+	args = append(args, fmt.Sprintf("%s/file", jobWorkingDirectory))
+
+	return args
+}
+
+func status() fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
 		id, err := ctx.ParamsInt("id")
 		if err != nil {
-			log.Error().Err(err).Msg("Invalid job id")
-			return ctx.Status(fiber.StatusBadRequest).SendString("invalid job id")
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "invalid job id",
+			})
 		}
 
 		jobMapLock.RLock()
 		defer jobMapLock.RUnlock()
+
 		job, ok := jobMap[int64(id)]
 		if !ok {
-			log.Error().Int("job_id", id).Msg("Job not found")
-			return ctx.Status(fiber.StatusNotFound).SendString("job not found")
+			return ctx.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"error": "job not found",
+			})
 		}
 
 		return ctx.JSON(job)
 	}
 }
 
-func download(workingDirectory string) func(*fiber.Ctx) error {
+func download(workingDirectory string) fiber.Handler {
 	return func(ctx *fiber.Ctx) error {
 		id, err := ctx.ParamsInt("id")
 		if err != nil {
-			log.Error().Err(err).Msg("Invalid job id")
-			return ctx.Status(fiber.StatusBadRequest).SendString("invalid job id")
+			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "invalid job id",
+			})
 		}
 
 		jobMapLock.RLock()
 		job, ok := jobMap[int64(id)]
-		if !ok {
-			log.Error().Int("job_id", id).Msg("Job not found")
-			return ctx.Status(fiber.StatusNotFound).SendString("job not found")
-		}
 		jobMapLock.RUnlock()
 
+		if !ok {
+			return ctx.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"error": "job not found",
+			})
+		}
+
 		if job.Processing {
-			log.Info().Int("job_id", id).Msg("Job is still processing")
-			return ctx.Status(fiber.StatusAccepted).SendString("job is still processing")
+			return ctx.Status(fiber.StatusAccepted).JSON(fiber.Map{
+				"message": "job is still processing",
+			})
 		}
 
 		if !job.Success {
-			log.Error().Int("job_id", id).Str("error", job.Error).Msg("Job failed")
-			return ctx.Status(fiber.StatusInternalServerError).SendString(job.Error)
+			return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": job.Error,
+			})
 		}
 
-		file, err := os.Open(fmt.Sprintf("%s/%d/%s", workingDirectory, id, "file"))
+		filePath := fmt.Sprintf("%s/%d/file", workingDirectory, id)
+		file, err := os.Open(filePath)
 		if err != nil {
-			log.Error().Err(err).Int("job_id", id).Msg("Failed to open file")
-			return ctx.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to open file: %v", err))
+			return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": fmt.Sprintf("failed to open file: %v", err),
+			})
 		}
-
-		log.Info().Str("file", file.Name()).Str("ip", ctx.IP()).Msg("Serving file")
+		defer file.Close()
 
 		jobMapLock.Lock()
 		delete(jobMap, int64(id))
 		jobMapLock.Unlock()
-
-		if err := os.RemoveAll(fmt.Sprintf("%s/%d", workingDirectory, id)); err != nil {
-			log.Error().Err(err).Int("job_id", id).Msg("Failed to cleanup working directory")
-		}
 
 		return ctx.SendStream(file)
 	}
 }
 
 func main() {
-	requestKey := os.Getenv("REQUEST_KEY")
-	tokenPIN := os.Getenv("TOKEN_PIN")
-	certFile := os.Getenv("CERT_FILE")
-	workingDirectory := os.TempDir()
+	config := loadConfig()
+	validateConfig(config)
 
-	if requestKey == "" {
+	server := setupServer(config)
+	setupRoutes(server, config)
+
+	log.Info().Msg("Starting server on :80")
+	if err := server.Listen(":80"); err != nil {
+		log.Fatal().Err(err).Msg("Failed to start server")
+	}
+}
+
+type Config struct {
+	RequestKey       string
+	TokenPIN         string
+	CertFile         string
+	WorkingDirectory string
+}
+
+func loadConfig() Config {
+	return Config{
+		RequestKey:       os.Getenv("REQUEST_KEY"),
+		TokenPIN:         os.Getenv("TOKEN_PIN"),
+		CertFile:         os.Getenv("CERT_FILE"),
+		WorkingDirectory: os.TempDir(),
+	}
+}
+
+func validateConfig(config Config) {
+	if config.RequestKey == "" {
 		log.Fatal().Msg("REQUEST_KEY is not set")
 	}
 
-	if workingDirectory == "" {
+	if config.WorkingDirectory == "" {
 		log.Fatal().Msg("Working directory is not set")
 	}
 
-	if certFile == "" {
-		certFile = "/etc/signing-server/cert.crt"
-
-		if _, err := os.Stat(certFile); err != nil {
-			log.Fatal().Str("cert_file", certFile).Msg("CERT_FILE is not set and default file does not exist")
-		}
-
-		log.Info().Str("cert_file", certFile).Msg("CERT_FILE is not set, using default")
-	} else {
-		if _, err := os.Stat(certFile); err != nil {
-			log.Fatal().Str("cert_file", certFile).Msg("CERT_FILE does not exist")
-		}
+	if config.CertFile == "" {
+		config.CertFile = DefaultCertFile
 	}
 
-	defer func() {
-		// Cleanup working directory
-		if err := os.RemoveAll(workingDirectory); err != nil {
-			log.Error().Err(err).Msg("Failed to cleanup working directory")
-		}
-	}()
+	if _, err := os.Stat(config.CertFile); err != nil {
+		log.Fatal().Str("cert_file", config.CertFile).Msg("Certificate file does not exist")
+	}
+}
 
-	server := fiber.New(fiber.Config{
-		Prefork:           true,
-		StreamRequestBody: true,
-
-		// Normally executable files does not exceed 1GB
-		BodyLimit: 1024 * 1024 * 1024,
-
+func setupServer(config Config) *fiber.App {
+	return fiber.New(fiber.Config{
+		Prefork:                 true,
+		StreamRequestBody:       true,
+		BodyLimit:               MaxFileSize,
 		EnableIPValidation:      true,
 		ProxyHeader:             "X-Forwarded-For",
 		EnableTrustedProxyCheck: true,
@@ -244,33 +292,18 @@ func main() {
 			"169.254.0.0/16",
 		},
 	})
+}
 
+func setupRoutes(server *fiber.App, config Config) {
 	server.Use(func(ctx *fiber.Ctx) error {
-		if ctx.Get("X-Request-Key") != requestKey {
+		if ctx.Get("X-Request-Key") != config.RequestKey {
 			log.Warn().Str("ip", ctx.IP()).Msg("Unauthorized request")
 			return ctx.SendStatus(fiber.StatusUnauthorized)
 		}
-
 		return ctx.Next()
 	})
 
-	server.Post("/sign", sign(workingDirectory, tokenPIN, certFile))
+	server.Post("/sign", sign(config.WorkingDirectory, config.TokenPIN, config.CertFile))
 	server.Get("/status/:id", status())
-	server.Get("/download/:id", download(workingDirectory))
-
-	log.Info().Msg("Starting server on :80")
-	if err := server.Listen(":80"); err != nil {
-		log.Fatal().Err(err).Msg("Failed to start server")
-	}
-}
-
-type CreateJobResponse struct {
-	ID int64 `json:"id"`
-}
-
-type Job struct {
-	ID         int64  `json:"id"`
-	Processing bool   `json:"processing"`
-	Success    bool   `json:"success"`
-	Error      string `json:"error"`
+	server.Get("/download/:id", download(config.WorkingDirectory))
 }
