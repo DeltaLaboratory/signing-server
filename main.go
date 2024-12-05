@@ -40,7 +40,7 @@ type CreateJobResponse struct {
 
 var (
 	jobMapLock = sync.RWMutex{}
-	jobMap     = make(map[uuid.UUID]*Job)
+	jobMap     = map[uuid.UUID]*Job{}
 )
 
 func init() {
@@ -261,9 +261,8 @@ func validateConfig(config *Config) {
 	}
 }
 
-func setupServer(config Config) *fiber.App {
+func setupServer() *fiber.App {
 	return fiber.New(fiber.Config{
-		Prefork:                 true,
 		StreamRequestBody:       true,
 		BodyLimit:               MaxFileSize,
 		EnableIPValidation:      true,
@@ -295,7 +294,7 @@ func setupRoutes(server *fiber.App, config Config) {
 func main() {
 	config := loadConfig()
 	validateConfig(&config)
-	server := setupServer(config)
+	server := setupServer()
 	setupRoutes(server, config)
 
 	log.Info().Msg("Starting server on :80")
