@@ -210,18 +210,9 @@ func download(workingDirectory string) fiber.Handler {
 			})
 		}
 
-		filePath := fmt.Sprintf("%s/%s/file", workingDirectory, id)
-		file, err := os.Open(filePath)
-		if err != nil {
-			return ctx.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": fmt.Sprintf("failed to open file: %v", err),
-			})
-		}
-		defer file.Close()
-
 		go cleanupJob(id, fmt.Sprintf("%s/%s", workingDirectory, id))
 
-		return ctx.SendStream(file)
+		return ctx.SendFile(fmt.Sprintf("%s/%s/file", workingDirectory, id))
 	}
 }
 
