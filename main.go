@@ -188,6 +188,11 @@ func download(workingDirectory string) fiber.Handler {
 		job, ok := jobMap[id]
 		jobMapLock.RUnlock()
 		if !ok {
+			for k, v := range jobMap {
+				log.Debug().Str("job_id", k.String()).Bool("job", v.Success).Msg("Job")
+			}
+
+			log.Debug().Str("job_id", id.String()).Msg("Job not found")
 			return ctx.Status(fiber.StatusNotFound).JSON(fiber.Map{
 				"error": "job not found",
 			})
