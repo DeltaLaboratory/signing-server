@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -31,10 +32,10 @@ func init() {
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 }
 
-func createJob(file io.Reader) (int64, error) {
+func createJob(file io.Reader) (uuid.UUID, error) {
 	req, err := http.NewRequest("POST", fmt.Sprintf("https://%s/sign", envEndpoint), file)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create request: %w", err)
+		return uuid.Nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("X-Request-Key", envRequestToken)
@@ -48,7 +49,7 @@ func createJob(file io.Reader) (int64, error) {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("failed to send request: %w", err)
+		return uuid.Nil, fmt.Errorf("failed to send request: %w", err)
 	}
 
 	defer func() {
@@ -60,22 +61,22 @@ func createJob(file io.Reader) (int64, error) {
 	if resp.StatusCode != http.StatusOK {
 		erst, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return 0, fmt.Errorf("failed to read response body: %s, %w", resp.Status, err)
+			return uuid.Nil, fmt.Errorf("failed to read response body: %s, %w", resp.Status, err)
 		} else {
-			return 0, fmt.Errorf("failed to create job: %s\n\t%s\n", resp.Status, erst)
+			return uuid.Nil, fmt.Errorf("failed to create job: %s\n\t%s\n", resp.Status, erst)
 		}
 	}
 
 	var cjresp CreateJobResponse
 	if err := json.NewDecoder(resp.Body).Decode(&cjresp); err != nil {
-		return 0, fmt.Errorf("failed to decode response: %w", err)
+		return uuid.Nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	return cjresp.ID, nil
 }
 
-func getJobStatus(jobID int64) (*Job, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("https://%s/status/%d", envEndpoint, jobID), nil)
+func getJobStatus(jobID uuid.UUID) (*Job, error) {
+	req, err := http.NewRequest("GET", fmt.Sprintf("https://%s/status/%d", envEndpoint, jobID.String()), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -110,8 +111,8 @@ func getJobStatus(jobID int64) (*Job, error) {
 	return &job, nil
 }
 
-func downloadFile(jobID int64) (io.ReadCloser, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("https://%s/download/%d", envEndpoint, jobID), nil)
+func downloadFile(jobID uuid.UUID) (io.ReadCloser, error) {
+	req, err := http.NewRequest("GET", fmt.Sprintf("https://%s/download/%d", envEndpoint, jobID.String()), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -171,7 +172,7 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to create job")
 	}
 
-	log.Info().Int64("jobID", jobID).Msg("Job created")
+	log.Info().Str("jobID", jobID.String()).Msg("Job created")
 
 	done := make(chan bool)
 
@@ -245,12 +246,12 @@ func spinner(done <-chan bool) {
 }
 
 type CreateJobResponse struct {
-	ID int64 `json:"id"`
+	ID uuid.UUID `json:"id"`
 }
 
 type Job struct {
-	ID         int64  `json:"id"`
-	Processing bool   `json:"processing"`
-	Success    bool   `json:"success"`
-	Error      string `json:"error"`
+	ID         uuid.UUID `json:"id"`
+	Processing bool      `json:"processing"`
+	Success    bool      `json:"success"`
+	Error      string    `json:"error"`
 }
