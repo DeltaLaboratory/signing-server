@@ -214,11 +214,8 @@ func download(workingDirectory string) fiber.Handler {
 		}
 		defer file.Close()
 
-		jobMapLock.Lock()
-		delete(jobMap, id)
-		jobMapLock.Unlock()
+		go cleanupJob(id, fmt.Sprintf("%s/%s", workingDirectory, id))
 
-		go cleanupJob(id, workingDirectory)
 		return ctx.SendStream(file)
 	}
 }

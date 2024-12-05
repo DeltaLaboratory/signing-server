@@ -76,7 +76,7 @@ func createJob(file io.Reader) (uuid.UUID, error) {
 }
 
 func getJobStatus(jobID uuid.UUID) (*Job, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("https://%s/status/%d", envEndpoint, jobID.String()), nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("https://%s/status/%s", envEndpoint, jobID.String()), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -112,7 +112,7 @@ func getJobStatus(jobID uuid.UUID) (*Job, error) {
 }
 
 func downloadFile(jobID uuid.UUID) (io.ReadCloser, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("https://%s/download/%d", envEndpoint, jobID.String()), nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("https://%s/download/%s", envEndpoint, jobID.String()), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -184,6 +184,8 @@ func main() {
 			<-done
 		}()
 	}
+
+	time.Sleep(1 * time.Second)
 
 	for {
 		job, err := getJobStatus(jobID)
