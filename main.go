@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,7 @@ type Job struct {
 	Processing bool      `json:"processing"`
 	Success    bool      `json:"success"`
 	Error      string    `json:"error"`
+	Extension  string    `json:"extension"`
 }
 
 // CreateJobResponse represents the response for job creation
@@ -100,7 +102,18 @@ func sign(workingDirectory, tokenPIN, certFile, timeStampServer string) fiber.Ha
 			})
 		}
 
-		filePath := fmt.Sprintf("%s/file", jobWorkingDirectory)
+		// Extract file extension from X-Filename header
+		extension := ""
+		if filename := ctx.Get("X-Filename"); filename != "" {
+			// Find the last dot in the filename
+			lastDotIndex := strings.LastIndex(filename, ".")
+			if lastDotIndex != -1 {
+				extension = filename[lastDotIndex:]
+			}
+		}
+
+		// Use the extension in the temporary file name
+		filePath := fmt.Sprintf("%s/file%s", jobWorkingDirectory, extension)
 		file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to create file")
@@ -122,10 +135,11 @@ func sign(workingDirectory, tokenPIN, certFile, timeStampServer string) fiber.Ha
 			ID:         id,
 			Processing: true,
 			Success:    false,
+			Extension:  extension,
 		}
 		jobMapLock.Unlock()
 
-		args := buildSigningArgs(tokenPIN, certFile, ctx, jobWorkingDirectory, timeStampServer)
+		args := buildSigningArgs(tokenPIN, certFile, ctx, jobWorkingDirectory, timeStampServer, extension)
 		cmd := exec.Command("jsign", args...)
 
 		go processSigningJob(id, cmd, jobWorkingDirectory)
@@ -134,21 +148,48 @@ func sign(workingDirectory, tokenPIN, certFile, timeStampServer string) fiber.Ha
 	}
 }
 
-func buildSigningArgs(tokenPIN, certFile string, ctx *fiber.Ctx, jobWorkingDirectory string, timeStampServer string) []string {
+func buildSigningArgs(tokenPIN, certFile string, ctx *fiber.Ctx, jobWorkingDirectory string, timeStampServer string, extension string) []string {
 	args := []string{
 		"--storetype", "PIV",
 		"--storepass", tokenPIN,
 		"--certfile", certFile,
-		"-d", "sha384",
-		"--tsaurl", timeStampServer,
 	}
+
+	// Get digest algorithm from header or use default
+	algorithm := ctx.Get("X-Algorithm")
+	if algorithm == "" {
+		algorithm = "sha384"
+	}
+	args = append(args, "-d", algorithm)
+
+	// Get timestamp mode from header
+	tsMode := ctx.Get("X-Timestamp-Mode")
+
+	// Handle timestamp server URL and mode
+	customTsUrl := ctx.Get("X-Timestamp-Server")
+	if customTsUrl != "" {
+		// Use custom timestamp server if provided
+		args = append(args, "--tsaurl", customTsUrl)
+	} else if timeStampServer != "" {
+		// Otherwise use the configured one
+		args = append(args, "--tsaurl", timeStampServer)
+	}
+
+	// Add timestamp mode if specified
+	if tsMode != "" {
+		args = append(args, "--tsmode", tsMode)
+	} else {
+		// Default to "all"
+		args = append(args, "--tsmode", "RFC3161")
+	}
+
 	if appName := ctx.Get("X-Application-Name"); appName != "" {
 		args = append(args, "--name", appName)
 	}
 	if appURL := ctx.Get("X-Application-URL"); appURL != "" {
 		args = append(args, "--url", appURL)
 	}
-	args = append(args, fmt.Sprintf("%s/file", jobWorkingDirectory))
+	args = append(args, fmt.Sprintf("%s/file%s", jobWorkingDirectory, extension))
 	return args
 }
 
@@ -212,7 +253,13 @@ func download(workingDirectory string) fiber.Handler {
 
 		go cleanupJob(id, fmt.Sprintf("%s/%s", workingDirectory, id))
 
-		return ctx.SendFile(fmt.Sprintf("%s/%s/file", workingDirectory, id))
+		// Use the stored extension when serving the file
+		filePath := fmt.Sprintf("%s/%s/file%s", workingDirectory, id, job.Extension)
+		if job.Extension != "" {
+			// Set the Content-Disposition header to include the original filename with extension
+			ctx.Set("Content-Disposition", fmt.Sprintf("attachment; filename=signed%s", job.Extension))
+		}
+		return ctx.SendFile(filePath)
 	}
 }
 

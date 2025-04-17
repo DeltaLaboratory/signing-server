@@ -20,6 +20,9 @@ var (
 
 	flagApplicationName string
 	flagApplicationURL  string
+	flagAlgorithm       string
+	flagTimestampMode   string
+	flagTimestampServer string
 
 	envEndpoint     string
 	envRequestToken string
@@ -32,19 +35,35 @@ func init() {
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 }
 
-func createJob(file io.Reader) (uuid.UUID, error) {
+func createJob(file io.Reader, filename string) (uuid.UUID, error) {
 	req, err := http.NewRequest("POST", fmt.Sprintf("https://%s/sign", envEndpoint), file)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("X-Request-Key", envRequestToken)
+	req.Header.Set("X-Filename", filename)
 	if flagApplicationName != "" {
 		req.Header.Set("X-Application-Name", flagApplicationName)
 	}
 
 	if flagApplicationURL != "" {
 		req.Header.Set("X-Application-URL", flagApplicationURL)
+	}
+
+	// Set algorithm if provided
+	if flagAlgorithm != "" {
+		req.Header.Set("X-Algorithm", flagAlgorithm)
+	}
+
+	// Set timestamp mode if provided
+	if flagTimestampMode != "" {
+		req.Header.Set("X-Timestamp-Mode", flagTimestampMode)
+	}
+
+	// Set timestamp server URL if provided
+	if flagTimestampServer != "" {
+		req.Header.Set("X-Timestamp-Server", flagTimestampServer)
 	}
 
 	resp, err := client.Do(req)
@@ -144,6 +163,9 @@ func main() {
 	flag.StringVar(&flagOutput, "output", "", "output file")
 	flag.StringVar(&flagApplicationName, "appname", "", "application name")
 	flag.StringVar(&flagApplicationURL, "appurl", "", "application url")
+	flag.StringVar(&flagAlgorithm, "algorithm", "", "digest algorithm (e.g., sha256, sha384, sha512)")
+	flag.StringVar(&flagTimestampMode, "tsmode", "", "timestamp mode")
+	flag.StringVar(&flagTimestampServer, "tsserver", "", "timestamp server URL")
 	flag.Parse()
 
 	if envEndpoint == "" {
@@ -167,7 +189,7 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to open input file")
 	}
 
-	jobID, err := createJob(file)
+	jobID, err := createJob(file, flagInput)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to create job")
 	}
@@ -256,4 +278,5 @@ type Job struct {
 	Processing bool      `json:"processing"`
 	Success    bool      `json:"success"`
 	Error      string    `json:"error"`
+	Extension  string    `json:"extension"`
 }

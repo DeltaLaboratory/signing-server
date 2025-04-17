@@ -25,7 +25,7 @@ RUN wget -qO - https://packages.adoptium.net/artifactory/api/gpg/key/public | gp
     && apt-get update && apt-get install -y --no-install-recommends temurin-21-jre \
     && rm -rf /var/lib/apt/lists/*
 
-RUN wget -O /tmp/jsigner.deb https://github.com/ebourg/jsign/releases/download/6.0/jsign_6.0_all.deb \
+RUN wget -O /tmp/jsigner.deb https://github.com/ebourg/jsign/releases/download/7.1/jsign_7.1_all.deb \
     && dpkg -i /tmp/jsigner.deb \
     && rm /tmp/jsigner.deb
 
