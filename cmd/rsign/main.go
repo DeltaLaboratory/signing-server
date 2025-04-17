@@ -12,6 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+
+	"github.com/DeltaLaboratory/signing-server/pkg/models"
 )
 
 var (
@@ -86,7 +88,7 @@ func createJob(file io.Reader, filename string) (uuid.UUID, error) {
 		}
 	}
 
-	var cjresp CreateJobResponse
+	var cjresp models.CreateJobResponse
 	if err := json.NewDecoder(resp.Body).Decode(&cjresp); err != nil {
 		return uuid.Nil, fmt.Errorf("failed to decode response: %w", err)
 	}
@@ -94,7 +96,7 @@ func createJob(file io.Reader, filename string) (uuid.UUID, error) {
 	return cjresp.ID, nil
 }
 
-func getJobStatus(jobID uuid.UUID) (*Job, error) {
+func getJobStatus(jobID uuid.UUID) (*models.Job, error) {
 	req, err := http.NewRequest("GET", fmt.Sprintf("https://%s/status/%s", envEndpoint, jobID.String()), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -122,7 +124,7 @@ func getJobStatus(jobID uuid.UUID) (*Job, error) {
 		}
 	}
 
-	var job Job
+	var job models.Job
 	if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
@@ -267,16 +269,4 @@ func spinner(done <-chan bool) {
 			i = (i + 1) % len(frames)
 		}
 	}
-}
-
-type CreateJobResponse struct {
-	ID uuid.UUID `json:"id"`
-}
-
-type Job struct {
-	ID         uuid.UUID `json:"id"`
-	Processing bool      `json:"processing"`
-	Success    bool      `json:"success"`
-	Error      string    `json:"error"`
-	Extension  string    `json:"extension"`
 }
